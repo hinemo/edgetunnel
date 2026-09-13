@@ -1,7 +1,405 @@
-﻿const Version = '2026-09-04 16:24:13';
+import { connect as cloudflareConnect } from 'cloudflare:sockets';
+
+const Version = '2026-09-04 16:24:13';
 let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
+let XHTTP运行配置缓存 = { 过期时间: 0, 值: null };
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
+const BestCF在线IP库 = Object.freeze({
+	cm: 'https://raw.githubusercontent.com/cmliu/cmliu/main/CF-CIDR.txt',
+	cf: 'https://cf.090227.xyz/ips-v4',
+});
+const BestCF探测域名 = 'bestcf.dys.qzz.io';
+
+// Worker Placement is a deployment-time setting. This KV record stores only the
+// desired target and an authenticated GitHub Actions dispatch performs deployment.
+const WorkerPlacement选项 = Object.freeze({
+	auto: { region: '', label: '默认就近执行' },
+	tokyo: { region: 'aws:ap-northeast-1', label: '东京（AWS ap-northeast-1）' },
+	singapore: { region: 'aws:ap-southeast-1', label: '新加坡（AWS ap-southeast-1）' },
+	seoul: { region: 'aws:ap-northeast-2', label: '首尔（AWS ap-northeast-2）' },
+	virginia: { region: 'aws:us-east-1', label: '弗吉尼亚（AWS us-east-1）' },
+});
+const WorkerPlacement配置键 = 'worker-placement.json';
+
+function 获取WorkerPlacement选项(值) {
+	const key = String(值 || '').trim().toLowerCase();
+	return WorkerPlacement选项[key] ? { key, ...WorkerPlacement选项[key] } : null;
+}
+
+function 获取WorkerPlacement调度配置(env) {
+	const repository = String(env.GITHUB_DEPLOY_REPOSITORY || '').trim();
+	const token = String(env.GITHUB_DEPLOY_TOKEN || '').trim();
+	const ref = String(env.GITHUB_DEPLOY_REF || 'main').trim();
+	const workflow = String(env.GITHUB_DEPLOY_WORKFLOW || 'deploy-placement.yml').trim();
+	return {
+		repository,
+		ref,
+		workflow,
+		configured: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) && !!token,
+		token,
+	};
+}
+
+async function 读取WorkerPlacement设置(env) {
+	let saved = {};
+	try { saved = JSON.parse(await env.KV?.get(WorkerPlacement配置键) || '{}'); } catch (_) { }
+	const dispatch = 获取WorkerPlacement调度配置(env);
+	return {
+		desired: 获取WorkerPlacement选项(saved.desired)?.key || 'singapore',
+		requestedAt: saved.requestedAt || null,
+		requestStatus: saved.requestStatus || 'not-requested',
+		lastDispatchStatus: saved.lastDispatchStatus || null,
+		dispatchConfigured: dispatch.configured,
+		repository: dispatch.configured ? dispatch.repository : null,
+		workflow: dispatch.configured ? dispatch.workflow : null,
+		options: Object.entries(WorkerPlacement选项).map(([key, item]) => ({ key, region: item.region || null, label: item.label })),
+	};
+}
+
+async function 请求WorkerPlacement部署(env, desired) {
+	const dispatch = 获取WorkerPlacement调度配置(env);
+	if (!dispatch.configured) throw new Error('未配置 GITHUB_DEPLOY_REPOSITORY 或 GITHUB_DEPLOY_TOKEN Secret');
+	const response = await fetch(`https://api.github.com/repos/${dispatch.repository}/actions/workflows/${encodeURIComponent(dispatch.workflow)}/dispatches`, {
+		method: 'POST',
+		headers: { 'Authorization': `Bearer ${dispatch.token}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'edgetunnel-placement-controller' },
+		body: JSON.stringify({ ref: dispatch.ref, inputs: { placement: desired.key } }),
+	});
+	if (!response.ok) throw new Error(`GitHub Actions 调度失败（HTTP ${response.status}）`);
+	return { repository: dispatch.repository, workflow: dispatch.workflow, ref: dispatch.ref };
+}
+const 管理页面增强内容 = String.raw`
+<style id="xhttp-config-enhancement-style">
+  .protocol-note{display:inline-flex;align-items:center;margin-left:6px;padding:2px 7px;border-radius:999px;font-size:11px;line-height:1.35;background:#fff3cd;color:#795b00;border:1px solid #ffe08a;vertical-align:middle}
+  .protocol-note.xhttp{background:#e8f4ff;color:#075985;border-color:#bae6fd}
+  #xhttpAdvancedGroup{grid-column:1/-1;margin-top:12px;padding:16px;border:1px solid rgba(59,130,246,.24);border-radius:12px;background:rgba(59,130,246,.045)}
+  #xhttpAdvancedGroup .xhttp-title{display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:5px}
+  #xhttpAdvancedGroup .xhttp-help{font-size:12px;opacity:.72;margin-bottom:14px}
+  #xhttpAdvancedGroup .xhttp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  #xhttpAdvancedGroup .form-group{margin:0}
+  #xhttpAdvancedGroup .xhttp-field-help{display:block;margin-top:6px;font-size:11px;line-height:1.55;opacity:.72}
+  #xhttpAdvancedGroup .xhttp-field-help b{font-weight:700;opacity:.95}
+  #xhttpAdvancedGroup .xhttp-section-title{grid-column:1/-1;margin-top:5px;padding:8px 10px;border-left:3px solid #3b82f6;background:rgba(59,130,246,.08);font-size:13px;font-weight:700}
+  #randomPathGroup .xhttp-inline-help{display:block;flex-basis:100%;margin-top:5px;font-size:11px;line-height:1.45;opacity:.72}
+  #xhttpAdvancedGroup .range-row{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:7px}
+  #placementControlGroup{grid-column:1/-1;margin:12px 0;padding:16px;border:1px solid rgba(16,185,129,.3);border-radius:12px;background:rgba(16,185,129,.055)}
+  #placementControlGroup .placement-title{font-weight:700;margin-bottom:5px}
+  #placementControlGroup .placement-help,#placementControlGroup .placement-status{font-size:12px;line-height:1.55;opacity:.78}
+  #placementControlGroup .placement-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+  #placementControlGroup select{min-width:240px;max-width:100%}
+  #placementControlGroup button{padding:8px 12px;border:0;border-radius:8px;background:#0f766e;color:#fff;cursor:pointer}
+  #placementControlGroup button:disabled{opacity:.55;cursor:not-allowed}
+  #placementControlGroup .placement-status{margin-top:10px}
+  #placementControlGroup .placement-status.error{color:#b91c1c;opacity:1}
+  #placementControlGroup .placement-status.ok{color:#047857;opacity:1}
+  #xhttpAdvancedGroup input,#xhttpAdvancedGroup select{width:100%}
+  @media(max-width:720px){#xhttpAdvancedGroup .xhttp-grid{grid-template-columns:1fr}}
+</style>
+<script id="xhttp-config-enhancement-script">
+(function(){
+  var defaults={
+    mode:'stream-one', paddingBytes:'100-1000', paddingMethod:'tokenish',
+    paddingPlacement:'queryInHeader', maxConnections:'2-3',
+    hMaxRequestTimes:'600-900', hMaxReusableSecs:'1800-3000',
+    uploadBundleBytes:20480, uploadFlushMs:1, disableSmux:true
+  };
+  function cfg(){
+    if(typeof currentConfig==='undefined'||!currentConfig)return null;
+    var x=currentConfig['XHTTP配置']||{};
+    var m=x['XMUX']||{};
+    return {
+      mode:x['模式']||defaults.mode,
+      paddingBytes:x['Padding字节']||defaults.paddingBytes,
+      paddingMethod:x['Padding方法']||defaults.paddingMethod,
+      paddingPlacement:x['Padding位置']||defaults.paddingPlacement,
+      maxConnections:m['最大连接数']||defaults.maxConnections,
+      hMaxRequestTimes:m['单连接最大请求']||defaults.hMaxRequestTimes,
+      hMaxReusableSecs:m['可复用秒数']||defaults.hMaxReusableSecs,
+      uploadBundleBytes:Number(x['流式分块']?.['上行合包字节'])||defaults.uploadBundleBytes,
+      uploadFlushMs:Number(x['流式分块']?.['刷新等待毫秒'])||defaults.uploadFlushMs,
+      disableSmux:x['禁用SMUX']!==false
+    };
+  }
+  function splitRange(value,fallback){
+    var match=String(value||fallback).match(/^(\d+)\s*-\s*(\d+)$/);
+    return match?[match[1],match[2]]:String(fallback).split('-');
+  }
+  function addNote(id,text,kind){
+    var label=document.querySelector('label[for="'+id+'"]');
+    if(!label||label.querySelector('.protocol-note'))return;
+    var span=document.createElement('span');
+    span.className='protocol-note'+(kind?' '+kind:'');
+    span.textContent=text;
+    label.appendChild(span);
+  }
+  function createPanel(){
+    if(document.getElementById('xhttpAdvancedGroup'))return;
+    var footer=document.getElementById('saveConfigBtn');
+    if(!footer)return;
+    footer=footer.closest('.module-footer');
+    var panel=document.createElement('div');
+    panel.id='xhttpAdvancedGroup';
+    panel.innerHTML='<div class="xhttp-title">VLESS + XHTTP <span class="protocol-note xhttp">Cloudflare Worker</span></div>'+
+      '<div class="xhttp-help">以下字段写入 config.json，并进入生成链接的 XHTTP extra。模式固定为 stream-one；Padding 范围限制为 64–4096 字节。</div>'+
+      '<div class="xhttp-grid">'+
+      '<div class="form-group"><label for="xhttpMode">XHTTP 模式</label><select id="xhttpMode" disabled><option value="stream-one">stream-one（Worker 流式）</option></select><small class="xhttp-field-help"><b>作用：</b>在一次 POST 中持续上传并流式接收下行数据，适配无状态 Worker。<b>当前：</b>固定使用 stream-one。</small></div>'+
+      '<div class="xhttp-section-title">流式分块</div>'+
+      '<div class="form-group"><label for="xhttpUploadBundleBytes">上行合包大小</label><input id="xhttpUploadBundleBytes" type="number" min="4096" max="262144" step="1024"><small class="xhttp-field-help"><b>作用：</b>Worker 将客户端请求体写入目标 TCP 前，最多聚合到该大小再写出；它不控制 Cloudflare 外层 TLS 包大小。<b>推荐：</b>20480 字节。</small></div>'+
+      '<div class="form-group"><label for="xhttpUploadFlushMs">合包刷新等待</label><input id="xhttpUploadFlushMs" type="number" min="1" max="100" step="1"><small class="xhttp-field-help"><b>作用：</b>小数据未达到合包大小时，最多等待多久就立即写出。调高可减少碎片，但会增加延迟。<b>推荐：</b>1–5 毫秒。</small></div>'+
+      '<div class="xhttp-section-title">XHTTP Padding</div>'+
+      '<div class="form-group"><label for="xhttpPaddingMethod">Padding 生成方式</label><select id="xhttpPaddingMethod"><option value="tokenish">tokenish</option><option value="repeat-x">repeat-x</option></select><small class="xhttp-field-help"><b>作用：</b>决定填充内容的字符形态。tokenish 使用类似普通 Token 的字符；repeat-x 使用重复字符。<b>推荐：</b>Cloudflare 使用 tokenish。</small></div>'+
+      '<div class="form-group"><label>Padding 字节范围</label><div class="range-row"><input id="xhttpPaddingMin" type="number" min="64" max="4096" step="1"><span>—</span><input id="xhttpPaddingMax" type="number" min="64" max="4096" step="1"></div><small class="xhttp-field-help"><b>作用：</b>设置每次 XHTTP 请求生成的随机填充长度。范围越大额外流量越多。<b>推荐：</b>100–1000；允许 64–4096。</small></div>'+
+      '<div class="form-group"><label for="xhttpPaddingPlacement">Padding 位置</label><select id="xhttpPaddingPlacement"><option value="queryInHeader">queryInHeader（推荐）</option><option value="header">header</option><option value="query">query（仅请求侧）</option></select><small class="xhttp-field-help"><b>作用：</b>决定 Padding 放入 HTTP 的位置。queryInHeader 将查询参数包装进 Header；header 直接写 Header；query 写入 URL 且只对请求侧有效。<b>推荐：</b>queryInHeader。</small></div>'+
+      '<div class="form-group"><label for="xhttpMaxConnections">XMUX 最大连接范围</label><input id="xhttpMaxConnections" type="text" inputmode="numeric" placeholder="2-3"><small class="xhttp-field-help"><b>作用：</b>限制客户端同时维护的 XHTTP 底层连接数量，并在范围内选择。过大会增加 Worker 并发和握手。<b>推荐：</b>2-3。</small></div>'+
+      '<div class="form-group"><label for="xhttpMaxRequestTimes">单连接最大请求次数</label><input id="xhttpMaxRequestTimes" type="text" inputmode="numeric" placeholder="600-900"><small class="xhttp-field-help"><b>作用：</b>一条 XMUX 连接处理达到该请求次数后轮换，避免无限复用。值过小会频繁重连。<b>推荐：</b>600-900。</small></div>'+
+      '<div class="form-group"><label for="xhttpReusableSecs">连接可复用秒数</label><input id="xhttpReusableSecs" type="text" inputmode="numeric" placeholder="1800-3000"><small class="xhttp-field-help"><b>作用：</b>限制一条连接可被继续分配新请求的时间；到期后排空并由新连接接替。<b>推荐：</b>1800-3000 秒。</small></div>'+
+      '<div class="form-group"><label for="xhttpDisableSmux">XHTTP 禁用 SMUX</label><label style="display:flex;align-items:center;gap:8px"><input id="xhttpDisableSmux" type="checkbox" style="width:auto" checked> 强制关闭（Nikki/mihomo 推荐）</label><small class="xhttp-field-help"><b>作用：</b>Clash/mihomo 订阅会为 XHTTP 节点写入 <code>smux.enabled: false</code>，避免在 VLESS + XHTTP 外再叠加 SMUX。<b>说明：</b>它与 XHTTP 原生 XMUX/reuse-settings 不是同一功能。</small></div>'+
+      '</div>';
+    footer.parentNode.insertBefore(panel,footer);
+    panel.querySelectorAll('input,select').forEach(function(el){
+      el.addEventListener('change',function(){if(typeof markModified==='function')markModified('config');});
+    });
+  }
+  function setValue(id,value){var el=document.getElementById(id);if(el)el.value=value;}
+  function hydrate(){
+    createPanel();
+    var c=cfg(); if(!c)return;
+    var range=splitRange(c.paddingBytes,defaults.paddingBytes);
+    setValue('xhttpMode',c.mode); setValue('xhttpPaddingMethod',c.paddingMethod);
+    setValue('xhttpPaddingMin',range[0]); setValue('xhttpPaddingMax',range[1]);
+    setValue('xhttpPaddingPlacement',c.paddingPlacement); setValue('xhttpMaxConnections',c.maxConnections);
+    setValue('xhttpMaxRequestTimes',c.hMaxRequestTimes); setValue('xhttpReusableSecs',c.hMaxReusableSecs);
+    setValue('xhttpUploadBundleBytes',c.uploadBundleBytes); setValue('xhttpUploadFlushMs',c.uploadFlushMs);
+    var disableSmux=document.getElementById('xhttpDisableSmux'); if(disableSmux)disableSmux.checked=c.disableSmux;
+    updateVisibility();
+  }
+  function validRange(value,fallback,min,max){
+    var match=String(value||'').trim().match(/^(\d+)\s*-\s*(\d+)$/); if(!match)return fallback;
+    var a=Math.max(min,Math.min(max,Number(match[1]))),b=Math.max(min,Math.min(max,Number(match[2])));
+    if(a>b){var t=a;a=b;b=t;} return a+'-'+b;
+  }
+  function sync(){
+    if(typeof currentConfig==='undefined'||!currentConfig)return;
+    var min=Math.max(64,Math.min(4096,Number(document.getElementById('xhttpPaddingMin')?.value)||100));
+    var max=Math.max(64,Math.min(4096,Number(document.getElementById('xhttpPaddingMax')?.value)||1000));
+    if(min>max){var t=min;min=max;max=t;}
+    currentConfig['XHTTP配置']={
+      '模式':'stream-one','Padding字节':min+'-'+max,
+      '禁用SMUX':document.getElementById('xhttpDisableSmux')?.checked!==false,
+      'Padding方法':document.getElementById('xhttpPaddingMethod')?.value||defaults.paddingMethod,
+      'Padding位置':document.getElementById('xhttpPaddingPlacement')?.value||defaults.paddingPlacement,
+      '流式分块':{
+        '上行合包字节':Math.max(4096,Math.min(262144,Number(document.getElementById('xhttpUploadBundleBytes')?.value)||defaults.uploadBundleBytes)),
+        '刷新等待毫秒':Math.max(1,Math.min(100,Number(document.getElementById('xhttpUploadFlushMs')?.value)||defaults.uploadFlushMs))
+      },
+      'XMUX':{
+        '最大连接数':validRange(document.getElementById('xhttpMaxConnections')?.value,defaults.maxConnections,1,16),
+        '单连接最大请求':validRange(document.getElementById('xhttpMaxRequestTimes')?.value,defaults.hMaxRequestTimes,1,10000),
+        '可复用秒数':validRange(document.getElementById('xhttpReusableSecs')?.value,defaults.hMaxReusableSecs,60,86400)
+      }
+    };
+  }
+  function updateVisibility(){
+    var panel=document.getElementById('xhttpAdvancedGroup'); if(!panel)return;
+    var protocol=document.getElementById('protocol')?.value;
+    var transport=document.getElementById('transport')?.value;
+    panel.style.display=(protocol==='vless'&&transport==='xhttp')?'block':'none';
+    updateTransportModalCopy(transport);
+  }
+  function updateTransportModalCopy(transport){
+    var modal=document.getElementById('transportGrpcModal'); if(!modal)return;
+    var title=modal.querySelector('.grpc-modal-title'),desc=modal.querySelector('.grpc-modal-desc');
+    var list=modal.querySelector('.grpc-modal-list'),button=modal.querySelector('.grpc-modal-confirm-btn');
+    if(transport==='xhttp'){
+      if(title)title.textContent='VLESS + XHTTP 部署提示';
+      if(desc)desc.textContent='当前选择 VLESS + XHTTP，请确认 Cloudflare 承载方式：';
+      if(list)list.innerHTML='<li>承载方式：必须部署在 <strong>Cloudflare Workers</strong>，不是 Pages。</li><li>入口协议：XHTTP 使用标准 HTTPS POST + ReadableStream；<strong>不需要开启 gRPC 或 WebSocket 开关</strong>，HTTP/2、HTTP/3 由 Cloudflare 边缘自动协商。</li><li>必需绑定：管理员密码使用 <code>ADMIN</code> Secret；配置存储绑定名必须为大写 <code>KV</code>。</li><li>域名入口：启用 <code>workers.dev</code> 或绑定 Worker 自定义域名，客户端必须使用 HTTPS/443。</li><li>缓存要求：XHTTP 响应使用 <code>Cache-Control: no-store</code>；不要为 XHTTP 路径配置 Cache Everything。</li><li>运行时：保持当前 <code>compatibility_date</code>，无需启用 <code>nodejs_compat</code>、Cloudflare Tunnel、Argo 或 Pages Functions。</li>';
+      if(button)button.textContent='知道了';
+    }else if(transport==='grpc'){
+      if(title)title.textContent='gRPC 功能提示';
+      if(desc)desc.textContent='当前选择 gRPC，使用前请确认 Cloudflare 网络设置。';
+      if(list)list.innerHTML='<li>项目必须部署在 <strong>Cloudflare Workers</strong>，不是 Pages。</li><li>请在 Cloudflare 面板为当前域名开启 <strong>gRPC</strong>。</li>';
+      if(button)button.textContent='我已开启 gRPC';
+    }
+  }
+  async function loadPlacementSettings(){
+    var response=await fetch('/admin/placement.json',{credentials:'same-origin',cache:'no-store'});
+    if(!response.ok)throw new Error('读取 Placement 设置失败（HTTP '+response.status+'）');
+    return response.json();
+  }
+  function placementStatus(message,kind){
+    var el=document.getElementById('placementStatus'); if(!el)return;
+    el.textContent=message; el.className='placement-status '+(kind||'');
+  }
+  function createPlacementPanel(){
+    if(document.getElementById('placementControlGroup'))return;
+    var footer=document.getElementById('saveConfigBtn'); if(!footer)return;
+    footer=footer.closest('.module-footer'); if(!footer||!footer.parentNode)return;
+    var panel=document.createElement('div'); panel.id='placementControlGroup';
+    panel.innerHTML='<div class="placement-title">Worker 执行区域</div>'+
+      '<div class="placement-help">选择后由 GitHub Actions 创建新的 Worker 部署版本；这是部署期配置，不会通过保存 config.json 立即改变运行区域。</div>'+
+      '<div class="placement-row"><select id="placementRegion" aria-label="Worker 执行区域"></select><button id="applyPlacementBtn" type="button">应用并发布</button></div>'+
+      '<div id="placementStatus" class="placement-status">正在读取部署设置…</div>';
+    footer.parentNode.insertBefore(panel,footer);
+    document.getElementById('applyPlacementBtn')?.addEventListener('click',async function(){
+      var select=document.getElementById('placementRegion'); var button=document.getElementById('applyPlacementBtn');
+      if(!select||!button)return;
+      button.disabled=true; placementStatus('正在请求 GitHub Actions 发布…');
+      try{
+        var response=await fetch('/admin/placement.json',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({placement:select.value})});
+        var payload=await response.json(); if(!response.ok)throw new Error(payload.error||('请求失败（HTTP '+response.status+'）'));
+        placementStatus('已排队：'+payload.placement+' → '+payload.region+'。请在 GitHub Actions 等待部署完成。','ok');
+      }catch(error){ placementStatus(error.message||'Placement 发布请求失败','error'); }
+      finally{button.disabled=false;}
+    });
+  }
+  async function hydratePlacementPanel(){
+    createPlacementPanel(); var select=document.getElementById('placementRegion'),button=document.getElementById('applyPlacementBtn'); if(!select||!button)return;
+    try{
+      var settings=await loadPlacementSettings();
+      select.innerHTML=(settings.options||[]).map(function(option){return '<option value="'+option.key+'">'+option.label+'</option>';}).join('');
+      select.value=settings.desired||'singapore';
+      if(settings.dispatchConfigured){ placementStatus('当前期望：'+select.options[select.selectedIndex]?.text+'。已配置 GitHub Actions：'+settings.repository+'/'+settings.workflow,'ok'); button.disabled=false; }
+      else{ placementStatus('尚未配置部署调度：需要 Worker Secret GITHUB_DEPLOY_TOKEN 和变量 GITHUB_DEPLOY_REPOSITORY。','error'); button.disabled=true; }
+    }catch(error){ placementStatus(error.message||'无法读取 Placement 设置','error'); button.disabled=true; }
+  }
+  function init(){
+    addNote('enable0RTT','支持：VLESS/Trojan + WS；XHTTP 不生效');
+    addNote('tlsFragmentShadowrocket','支持：Shadowrocket 客户端的 TLS 链接参数');
+    addNote('tlsFragmentHapp','支持：Happ 客户端的 TLS 链接参数');
+    var randomLabel=document.querySelector('label[for="randomPath"]');
+    if(randomLabel){
+      randomLabel.childNodes[0].textContent='XHTTP 路径随机化';
+      randomLabel.title='为每个生成节点扩展随机路径；Worker 会按基础 PATH 接收请求';
+      document.getElementById('randomPath').title=randomLabel.title;
+      var randomGroup=document.getElementById('randomPathGroup');
+      if(randomGroup&&!randomGroup.querySelector('.xhttp-inline-help')){
+        var help=document.createElement('small');help.className='xhttp-inline-help';
+        help.innerHTML='<b>作用：</b>生成订阅节点时在基础 PATH 后添加随机路径片段，减少所有节点共用完全相同 URL 的情况。<b>范围：</b>仅改变分享链接路径，不改变 TLS 指纹；VLESS + XHTTP 可用。';
+        randomGroup.appendChild(help);
+      }
+    }
+    createPanel(); hydrate(); void hydratePlacementPanel();
+    document.getElementById('protocol')?.addEventListener('change',updateVisibility);
+    document.getElementById('transport')?.addEventListener('change',updateVisibility);
+    document.addEventListener('click',function(e){
+      if(e.target&&e.target.id==='saveConfigBtn')sync();
+      if(e.target&&e.target.id==='cancelConfigBtn')setTimeout(hydrate,0);
+    },true);
+    setTimeout(hydrate,600);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
+</script>`;
+
+async function 获取增强管理页面(查询字符串 = '') {
+	const 上游响应 = await fetch(Pages静态页面 + '/admin' + 查询字符串);
+	let 页面文本 = await 上游响应.text();
+	页面文本 = 页面文本.replace(/const BEST_HOSTS = \[\s*"bestcf\.cmliussss\.hidns\.vip",\s*"ns\.psb\.kdns\.fr"\s*\];/, 'const BEST_HOSTS = ["bestcf.dys.qzz.io"];');
+	// BestCF 在线优选：关闭 CN 网络检测门禁，但保留测速与 IP 库功能。
+	页面文本 = 页面文本
+		.replace('async function ensureCnNetworkBeforeAction({ button, statusEl, idleHtml }) {', 'const ENABLE_CN_NETWORK_CHECK = false;\n\n\t\t\t\tasync function ensureCnNetworkBeforeAction({ button, statusEl, idleHtml }) {\n\t\t\t\t\tif (!ENABLE_CN_NETWORK_CHECK) return true;')
+		.replace('if (result.value.allowed) {', 'if (!ENABLE_CN_NETWORK_CHECK || result.value.allowed) {')
+		.replace('if (!allowed) showNetworkWarning();', 'if (ENABLE_CN_NETWORK_CHECK && !allowed) showNetworkWarning();')
+		.replace('const hasService = availableFamilies().length > 0;', 'const hasService = !ENABLE_CN_NETWORK_CHECK || availableFamilies().length > 0;');
+	const body结束位置 = 页面文本.lastIndexOf('</body>');
+	const 注入后页面 = body结束位置 >= 0
+		? 页面文本.slice(0, body结束位置) + 管理页面增强内容 + 页面文本.slice(body结束位置)
+		: 页面文本 + 管理页面增强内容;
+	const headers = new Headers(上游响应.headers);
+	headers.delete('Content-Length');
+	headers.delete('Content-Encoding');
+	headers.delete('ETag');
+	headers.set('Cache-Control', 'no-store');
+	return new Response(注入后页面, { status: 上游响应.status, statusText: 上游响应.statusText, headers });
+}
+
+function 读取BestCF正整数(value, 默认值, 最小值, 最大值) {
+	const 数值 = Number(value);
+	return Number.isInteger(数值) ? Math.max(最小值, Math.min(最大值, 数值)) : 默认值;
+}
+
+function BestCFIPv4转数值(ip) {
+	const parts = String(ip).split('.').map(Number);
+	if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+	return parts.reduce((value, part) => value * 256 + part, 0);
+}
+
+function BestCF数值转IPv4(value) {
+	return [24, 16, 8, 0].map(shift => Math.floor(value / (2 ** shift)) % 256).join('.');
+}
+
+function BestCF抽样CIDR(文本, 每段样本数) {
+	const [ip, 原始前缀] = String(文本).trim().split('/');
+	const 前缀 = 原始前缀 === undefined ? 32 : Number(原始前缀);
+	const 数值 = BestCFIPv4转数值(ip);
+	if (数值 === null || !Number.isInteger(前缀) || 前缀 < 8 || 前缀 > 32) return [];
+	const 主机数量 = 2 ** (32 - 前缀);
+	const 网络地址 = Math.floor(数值 / 主机数量) * 主机数量;
+	const 数量 = 原始前缀 === undefined ? 1 : 每段样本数;
+	const 结果 = [];
+	for (let index = 0; index < 数量; index += 1) {
+		const 偏移 = 主机数量 === 1 ? 0 : Math.floor(Math.random() * 主机数量);
+		结果.push(BestCF数值转IPv4(网络地址 + 偏移));
+	}
+	return 结果;
+}
+
+function BestCFIPv4转标签(ip) {
+	return ip.split('.').map(part => Number(part).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+async function 执行BestCF在线优选(url) {
+	const 库名称 = (url.searchParams.get('library') || 'cm').toLowerCase();
+	const IP库地址 = BestCF在线IP库[库名称];
+	if (!IP库地址) throw new Error('library 仅支持 cm 或 cf');
+	const 限制数量 = 读取BestCF正整数(url.searchParams.get('limit'), 30, 1, 100);
+	const 每段样本数 = 读取BestCF正整数(url.searchParams.get('samples'), 2, 1, 8);
+	const 超时毫秒 = 读取BestCF正整数(url.searchParams.get('timeout'), 4000, 1000, 10000);
+	const 并发数 = 读取BestCF正整数(url.searchParams.get('concurrency'), 6, 1, 12);
+	const 库响应 = await fetch(IP库地址, { headers: { 'User-Agent': 'edgetunnel-bestcf-api/1.0' } });
+	if (!库响应.ok) throw new Error(`IP 库下载失败: HTTP ${库响应.status}`);
+	const 候选IP = [];
+	const 已见 = new Set();
+	for (const 行 of (await 库响应.text()).split(/\r?\n/)) {
+		for (const ip of BestCF抽样CIDR(行.replace(/#.*/, '').trim(), 每段样本数)) {
+			if (已见.has(ip)) continue;
+			已见.add(ip);
+			候选IP.push(ip);
+			if (候选IP.length >= 限制数量) break;
+		}
+		if (候选IP.length >= 限制数量) break;
+	}
+	if (!候选IP.length) throw new Error('IP 库未生成可用 IPv4 候选');
+
+	const 探测单个IP = async (ip) => {
+		const 请求URL = `https://${BestCFIPv4转标签(ip)}.${BestCF探测域名}/ip.json?_t=${Date.now()}`;
+		const 控制器 = new AbortController();
+		const 定时器 = setTimeout(() => 控制器.abort(), 超时毫秒);
+		try {
+			const 预检响应 = await fetch(请求URL, { method: 'OPTIONS', signal: 控制器.signal });
+			if (!预检响应.ok) throw new Error(`OPTIONS HTTP ${预检响应.status}`);
+			const 开始时间 = performance.now();
+			const 响应 = await fetch(请求URL, { signal: 控制器.signal });
+			if (!响应.ok) throw new Error(`GET HTTP ${响应.status}`);
+			const 数据 = await 响应.json();
+			return { ip, port: 443, latencyMs: Math.max(1, Math.round(performance.now() - 开始时间)), country: 数据.country || '未知', colo: 数据.colo || '未知', detectedIp: 数据.ip || '' };
+		} finally {
+			clearTimeout(定时器);
+		}
+	};
+
+	const 结果 = [];
+	let 游标 = 0;
+	await Promise.all(Array.from({ length: Math.min(并发数, 候选IP.length) }, async () => {
+		while (游标 < 候选IP.length) {
+			const ip = 候选IP[游标++];
+			try { 结果.push(await 探测单个IP(ip)); } catch (_) { /* 跳过不可用候选 */ }
+		}
+	}));
+	结果.sort((a, b) => a.latencyMs - b.latencyMs);
+	return { library: 库名称, requested: 候选IP.length, available: 结果.length, results: 结果 };
+}
 ///////////////////////////////////////////////////////全局常量和工具函数///////////////////////////////////////////////
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 20 * 1024, 上行队列最大字节 = 16 * 1024 * 1024, 上行队列最大条目 = 4096;
@@ -77,7 +475,8 @@ export default {
 				return await 处理gRPC请求(request, userID, 反代上下文);
 			}
 			log(`[叉HTTP] 命中请求: ${url.pathname}${url.search}`);
-			return await 处理叉HTTP请求(request, userID, 反代上下文);
+			const XHTTP运行配置 = await 读取XHTTP运行配置(env);
+			return await 处理叉HTTP请求(request, userID, 反代上下文, XHTTP运行配置);
 		} else {
 			if (url.protocol === 'http:') return Response.redirect(url.href.replace(`http://${url.hostname}`, `https://${url.hostname}`), 301);
 			if (!管理员密码) return fetch(Pages静态页面 + '/noADMIN').then(r => { const headers = new Headers(r.headers); headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); headers.set('Pragma', 'no-cache'); headers.set('Expires', '0'); return new Response(r.body, { status: 404, statusText: r.statusText, headers }) });
@@ -134,6 +533,14 @@ export default {
 							}
 						}
 						return new Response(JSON.stringify({ success: false, data: [] }, null, 2), { status: 403, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+					} else if (访问路径 === 'admin/bestcf/optimize') {// OpenWrt/curl BestCF 在线优选接口
+						if (request.method !== 'GET') return new Response(JSON.stringify({ error: '仅支持 GET 请求' }), { status: 405, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+						try {
+							const 结果 = await 执行BestCF在线优选(url);
+							return new Response(JSON.stringify(结果, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
+						} catch (err) {
+							return new Response(JSON.stringify({ error: err?.message || String(err) }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
+						}
 					} else if (访问路径 === 'admin/check') {// 代理检查
 						const 代理协议 = ['socks5', 'http', 'https', 'turn', 'sstp'].find(类型 => url.searchParams.has(类型)) || null;
 						if (!代理协议) return new Response(JSON.stringify({ error: '缺少代理参数' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
@@ -217,7 +624,21 @@ export default {
 							return new Response(JSON.stringify(errorResponse, null, 2), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 						}
 					} else if (request.method === 'POST') {// 处理 KV 操作（POST 请求）
-						if (访问路径 === 'admin/config.json') { // 保存config.json配置
+						if (访问路径 === 'admin/placement.json') {
+							try {
+								const payload = await request.json();
+								const desired = 获取WorkerPlacement选项(payload?.placement);
+								if (!desired) return new Response(JSON.stringify({ error: '不支持的 Worker Placement 目标' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+								const dispatch = await 请求WorkerPlacement部署(env, desired);
+								const saved = { desired: desired.key, requestedAt: new Date().toISOString(), requestStatus: 'queued', lastDispatchStatus: 'accepted', dispatch: { repository: dispatch.repository, workflow: dispatch.workflow, ref: dispatch.ref } };
+								await env.KV.put(WorkerPlacement配置键, JSON.stringify(saved));
+								ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Placement_Deploy_Queued', { placement: desired.key, region: desired.region, repository: dispatch.repository }));
+								return new Response(JSON.stringify({ success: true, placement: desired.key, region: desired.region, status: 'queued', repository: dispatch.repository, workflow: dispatch.workflow }, null, 2), { status: 202, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
+							} catch (error) {
+								console.error('Worker Placement 调度失败:', error);
+								return new Response(JSON.stringify({ error: error.message || 'Worker Placement 调度失败' }), { status: 502, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
+							}
+						} else if (访问路径 === 'admin/config.json') { // 保存config.json配置
 							try {
 								const newConfig = await request.json();
 								// 验证配置完整性
@@ -225,6 +646,7 @@ export default {
 
 								// 保存到 KV
 								await env.KV.put('config.json', JSON.stringify(newConfig, null, 2));
+								XHTTP运行配置缓存 = { 过期时间: 0, 值: null };
 								ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
 								return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 							} catch (error) {
@@ -284,6 +706,8 @@ export default {
 								return new Response(JSON.stringify({ error: '保存自定义IP失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 							}
 						} else return new Response(JSON.stringify({ error: '不支持的POST请求路径' }), { status: 404, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+					} else if (访问路径 === 'admin/placement.json') {
+						return new Response(JSON.stringify(await 读取WorkerPlacement设置(env), null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
 					} else if (访问路径 === 'admin/config.json') {// 处理 admin/config.json 请求，返回JSON
 						return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
 					} else if (区分大小写访问路径 === 'admin/ADD.txt') {// 处理 admin/ADD.txt 请求，返回本地优选IP
@@ -295,7 +719,7 @@ export default {
 					}
 
 					ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Admin_Login', config_JSON));
-					return fetch(Pages静态页面 + '/admin' + url.search);
+					return 获取增强管理页面(url.search);
 				} else if (访问路径 === 'logout' || uuidRegex.test(访问路径)) {//清除cookie并跳转到登录页面
 					const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
 					响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
@@ -333,7 +757,7 @@ export default {
 							? 'mixed'
 							: url.searchParams.has('target')
 								? url.searchParams.get('target')
-								: url.searchParams.has('clash') || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo')
+								: url.searchParams.has('clash') || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo') || ua.includes('nikki')
 									? 'clash'
 									: url.searchParams.has('sb') || url.searchParams.has('singbox') || ua.includes('singbox') || ua.includes('sing-box')
 										? 'singbox'
@@ -428,14 +852,14 @@ export default {
 									try {
 										const 代理协议 = 链式代理匹配[1].toLowerCase(), 代理参数 = 链式代理匹配[2];
 										const 链式代理数据 = { type: 代理协议, ...获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)) };
-										完整节点路径 = `/video/${base64SecretEncode(JSON.stringify(链式代理数据), userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
+										完整节点路径 = `/video/${base64SecretEncode(JSON.stringify(链式代理数据), userID) + (config_JSON.启用0RTT && config_JSON.传输协议 === 'ws' ? '?ed=2560' : '')}`;
 										节点备注 = 节点备注.replace(链式代理匹配[0], '').trim() || 节点地址;
 									} catch (error) {
 										console.warn(`[订阅内容] 链式代理解析失败，已忽略该指令: ${链式代理匹配[0]} (${error && error.message ? error.message : error})`);
 									}
 								} else if (反代IP池.length > 0) {
 									const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
-									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
+									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT && config_JSON.传输协议 === 'ws' ? '?ed=2560' : '');
 								}
 								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
 
@@ -575,34 +999,98 @@ function 提取叉HTTPPadding值(request, 本机Padding头, 本机Padding键) {
 	return 请求URL.searchParams.get(本机Padding键) || '';
 }
 
-function 校验叉HTTPPadding(request, 本机Padding头, 本机Padding键) {
+function 解析叉HTTPPadding范围(范围文本 = '100-1000') {
+	const 匹配 = String(范围文本).trim().match(/^(\d+)\s*-\s*(\d+)$/);
+	let 最小 = 匹配 ? Number(匹配[1]) : 100;
+	let 最大 = 匹配 ? Number(匹配[2]) : 1000;
+	最小 = Math.max(64, Math.min(4096, 最小 || 100));
+	最大 = Math.max(64, Math.min(4096, 最大 || 1000));
+	if (最小 > 最大) [最小, 最大] = [最大, 最小];
+	return { 最小, 最大 };
+}
+
+function 规范化叉HTTP整数范围(范围文本, 默认范围, 最小允许值, 最大允许值) {
+	const 默认匹配 = String(默认范围).match(/^(\d+)-(\d+)$/);
+	const 匹配 = String(范围文本 || '').trim().match(/^(\d+)\s*-\s*(\d+)$/) || 默认匹配;
+	let 最小 = Math.max(最小允许值, Math.min(最大允许值, Number(匹配[1])));
+	let 最大 = Math.max(最小允许值, Math.min(最大允许值, Number(匹配[2])));
+	if (最小 > 最大) [最小, 最大] = [最大, 最小];
+	return `${最小}-${最大}`;
+}
+
+function 校验叉HTTPPadding(request, 本机Padding头, 本机Padding键, XHTTP运行配置 = {}) {
 	const padding值 = 提取叉HTTPPadding值(request, 本机Padding头, 本机Padding键);
-	if (!padding值) return true;
+	if (!padding值) return false;
+	const { 最小, 最大 } = XHTTP运行配置.Padding范围 || 解析叉HTTPPadding范围();
+	if (XHTTP运行配置.Padding方法 === 'repeat-x') return padding值.length >= 最小 && padding值.length <= 最大;
 	const huffman长度 = 计算HPACKHuffman字节长度(padding值);
-	return huffman长度 >= 98 && huffman长度 <= 1002;
+	return huffman长度 >= Math.max(0, 最小 - 2) && huffman长度 <= 最大 + 2;
 }
 
 const 叉HTTPBase62字符集 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
-function 生成叉HTTPPadding串(长度) {
+function 生成叉HTTPPadding串(长度, 方法 = 'tokenish') {
+	长度 = Math.max(1, Number(长度) || 1);
+	if (方法 === 'repeat-x') return 'X'.repeat(长度);
 	const 字符集长度 = 叉HTTPBase62字符集.length;
 	let 结果 = '';
-	for (let i = 0; i < 长度; i++) {
+	const 初始字符数 = Math.max(1, Math.ceil(长度 / 0.8));
+	for (let i = 0; i < 初始字符数; i++) {
 		结果 += 叉HTTPBase62字符集[Math.floor(Math.random() * 字符集长度)];
+	}
+	let 调整字符 = 'X';
+	for (let i = 0; i < 150; i++) {
+		const 当前长度 = 计算HPACKHuffman字节长度(结果);
+		const 差值 = 当前长度 - 长度;
+		if (Math.abs(差值) <= 2) break;
+		if (差值 < 0) {
+			结果 += 调整字符;
+			调整字符 = 调整字符 === 'X' ? 'Z' : 'X';
+		} else if (结果.length > 1) 结果 = 结果.slice(0, -1);
+		else break;
 	}
 	return 结果;
 }
 
-async function 处理叉HTTP请求(request, yourUUID, 反代上下文 = {}) {
+async function 读取XHTTP运行配置(env) {
+	const 默认值 = {
+		上行合包字节: 上行合包目标字节,
+		刷新等待毫秒: 1,
+		Padding范围: 解析叉HTTPPadding范围('100-1000'),
+		Padding方法: 'tokenish',
+		Padding位置: 'queryInHeader',
+	};
+	try {
+		if (XHTTP运行配置缓存.值 && Date.now() < XHTTP运行配置缓存.过期时间) return XHTTP运行配置缓存.值;
+		if (!env?.KV || typeof env.KV.get !== 'function') return 默认值;
+		const 原始配置 = await env.KV.get('config.json');
+		if (!原始配置) return 默认值;
+		const XHTTP配置 = JSON.parse(原始配置)?.XHTTP配置 || {};
+		const 分块配置 = XHTTP配置.流式分块 || {};
+		const 运行配置 = {
+			上行合包字节: Math.max(4096, Math.min(262144, Number(分块配置.上行合包字节) || 默认值.上行合包字节)),
+			刷新等待毫秒: Math.max(1, Math.min(100, Number(分块配置.刷新等待毫秒) || 默认值.刷新等待毫秒)),
+			Padding范围: 解析叉HTTPPadding范围(XHTTP配置.Padding字节),
+			Padding方法: XHTTP配置.Padding方法 === 'repeat-x' ? 'repeat-x' : 'tokenish',
+			Padding位置: ['queryInHeader', 'header', 'query'].includes(XHTTP配置.Padding位置) ? XHTTP配置.Padding位置 : 'queryInHeader',
+		};
+		XHTTP运行配置缓存 = { 过期时间: Date.now() + 30000, 值: 运行配置 };
+		return 运行配置;
+	} catch (e) {
+		return 默认值;
+	}
+}
+
+async function 处理叉HTTP请求(request, yourUUID, 反代上下文 = {}, XHTTP运行配置 = {}) {
 	if (!request.body) return new Response('Bad Request', { status: 400 });
 	const { 头: 本机Padding头, 键: 本机Padding键 } = 获取叉HTTPPadding标识(yourUUID);
-	if (!校验叉HTTPPadding(request, 本机Padding头, 本机Padding键)) return new Response('Bad Request', { status: 400 });
+	if (!校验叉HTTPPadding(request, 本机Padding头, 本机Padding键, XHTTP运行配置)) return new Response('Bad Request', { status: 400 });
 	const reader = request.body.getReader();
 	const 首包 = await 读取叉HTTP首包(reader, yourUUID);
 	if (!首包) {
 		try { reader.releaseLock() } catch (e) { }
 		return new Response('Invalid request', { status: 400 });
 	}
-	if (isSpeedTestSite(首包.hostname) && 反代上下文.代理类型 === null) {
+	if (是标准HTTP连通性探测(首包.hostname, 首包.port, 首包.rawData) && 反代上下文.代理类型 === null) {
 		try { reader.releaseLock() } catch (e) { }
 		return new Response(构造本地204响应(首包.respHeader), {
 			status: 200,
@@ -625,9 +1113,15 @@ async function 处理叉HTTP请求(request, yourUUID, 反代上下文 = {}) {
 	});
 
 	try {
-		const 响应URL = new URL('https://x.invalid/');
-		响应URL.searchParams.set(本机Padding键, 生成叉HTTPPadding串(100 + Math.floor(Math.random() * 901)));
-		responseHeaders.set(本机Padding头, 响应URL.toString());
+		const 范围 = XHTTP运行配置.Padding范围 || 解析叉HTTPPadding范围();
+		const Padding长度 = 范围.最小 + Math.floor(Math.random() * (范围.最大 - 范围.最小 + 1));
+		const Padding值 = 生成叉HTTPPadding串(Padding长度, XHTTP运行配置.Padding方法);
+		if (XHTTP运行配置.Padding位置 === 'header') responseHeaders.set(本机Padding头, Padding值);
+		else if (XHTTP运行配置.Padding位置 !== 'query') {
+			const 响应URL = new URL('https://x.invalid/');
+			响应URL.searchParams.set(本机Padding键, Padding值);
+			responseHeaders.set(本机Padding头, 响应URL.toString());
+		}
 	} catch (e) { }
 
 	if (首包.isUDP) return 处理叉HTTPUDP请求(首包, reader, request, 反代上下文, responseHeaders);
@@ -652,7 +1146,16 @@ async function 处理叉HTTP请求(request, yourUUID, 反代上下文 = {}) {
 	} catch (err) {
 		log(`[叉HTTP-Pipe] 连接失败: ${err?.message || err}`);
 		清理(err);
-		return new Response('bad gateway', { status: 502 });
+		const 调试详情 = request.headers.get('x-codex-debug') === 'xhttp-egress-20260903'
+			? JSON.stringify({
+				name: err?.name,
+				message: err?.message,
+				errors: Array.isArray(err?.errors) ? err.errors.map(item => ({ name: item?.name, message: item?.message, stack: item?.stack })) : [],
+				directError: err?.directError,
+				stack: err?.stack,
+			})
+			: 'bad gateway';
+		return new Response(调试详情, { status: 502 });
 	}
 	if (!socket) {
 		清理(new Error('socket is null'));
@@ -660,7 +1163,7 @@ async function 处理叉HTTP请求(request, yourUUID, 反代上下文 = {}) {
 	}
 
 	const 上行Promise = (async () => {
-		const 上行合包器 = 创建上行Grain合包流();
+		const 上行合包器 = 创建上行Grain合包流(XHTTP运行配置.上行合包字节, XHTTP运行配置.刷新等待毫秒);
 		const 搬运Promise = 上行合包器.readable.pipeTo(socket.writable, { signal: abortController.signal });
 		void 搬运Promise.catch(清理);
 		const 上行reader = request.body.getReader();
@@ -2174,7 +2677,9 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	const ctx反代兜底 = 反代上下文.反代兜底 !== undefined ? 反代上下文.反代兜底 : true;
 	let 反代数组索引 = 0;
 	log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${ctx反代IP} | 反代兜底: ${ctx反代兜底 ? '是' : '否'} | 反代类型: ${ctx代理类型 || 'proxyip'} | 全局: ${ctx代理全局 ? '是' : '否'}`);
-	const 连接超时毫秒 = 1000;
+	// cloudflare:sockets 的建连可能包含 DNS、路由和远端握手调度；1 秒会把
+	// 正常的慢建连误判为失败，最终让 XHTTP 返回 502，客户端测速显示 -1。
+	const 连接超时毫秒 = 10000;
 	let 已通过代理发送首包 = false;
 	const TCP连接 = 创建请求TCP连接器(request);
 	const 使用木马反代 = 允许木马反代 && (反代上下文.木马反代地址 || null);
@@ -2214,20 +2719,30 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	};
 
 	async function 等待连接建立(remoteSock, timeoutMs = 连接超时毫秒) {
-		await Promise.race([
-			remoteSock.opened,
-			new Promise((_, reject) => setTimeout(() => reject(new Error('连接超时')), timeoutMs))
-		]);
+		let timeoutId = null;
+		try {
+			await Promise.race([
+				remoteSock.opened,
+				new Promise((_, reject) => {
+					timeoutId = setTimeout(() => reject(new Error(`连接超时: ${timeoutMs}ms`)), timeoutMs);
+				})
+			]);
+		} finally {
+			if (timeoutId !== null) clearTimeout(timeoutId);
+		}
 	}
 
 	async function 打开TCP连接(address, port) {
-		const remoteSock = TCP连接({ hostname: address, port });
+		let remoteSock = null;
 		try {
+			remoteSock = TCP连接({ hostname: address, port });
 			await 等待连接建立(remoteSock);
 			return remoteSock;
 		} catch (err) {
 			try { remoteSock?.close?.() } catch (e) { }
-			throw err;
+			const wrapped = new Error(`${address}:${port} -> ${err?.message || err}`);
+			wrapped.cause = err;
+			throw wrapped;
 		}
 	}
 
@@ -2451,14 +2966,24 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 			});
 			if (仅建立连接) return initialSocket;
 		} catch (err) {
-			log(`[TCP转发] 直连 ${host}:${portNum} 失败: ${err.message}`);
+			const 直连错误明细 = Array.isArray(err?.errors) ? err.errors.map(e => e?.message || String(e)).join(' | ') : '';
+			log(`[TCP转发] 直连 ${host}:${portNum} 失败: ${err.message}${直连错误明细 ? ` | ${直连错误明细}` : ''}`);
 			if (remoteConnWrapper.generation !== 直连世代) throw err;
 			if (err instanceof Error && err.name === '预加载解析为空') {
 				closeSocketQuietly(ws);
 				throw err;
 			}
 			if (ws.readyState !== WebSocket.OPEN) throw err;
-			await connecttoPry();
+			try {
+				await connecttoPry();
+			} catch (fallbackError) {
+				fallbackError.directError = {
+					name: err?.name,
+					message: err?.message,
+					errors: Array.isArray(err?.errors) ? err.errors.map(item => item?.message || String(item)) : [],
+				};
+				throw fallbackError;
+			}
 			if (仅建立连接) return remoteConnWrapper.socket;
 		}
 	}
@@ -2598,7 +3123,9 @@ function 创建Grain收纳器(容量, 复制合包结果 = false) {
 	};
 }
 
-function 创建上行Grain合包流(目标字节 = 上行合包目标字节) {
+function 创建上行Grain合包流(目标字节 = 上行合包目标字节, 刷新等待毫秒 = 1) {
+	目标字节 = Math.max(4096, Math.min(262144, Number(目标字节) || 上行合包目标字节));
+	刷新等待毫秒 = Math.max(1, Math.min(100, Number(刷新等待毫秒) || 1));
 	const identity = typeof IdentityTransformStream !== 'undefined'
 		? new IdentityTransformStream()
 		: new TransformStream();
@@ -2639,7 +3166,7 @@ function 创建上行Grain合包流(目标字节 = 上行合包目标字节) {
 		定时器 = setTimeout(() => {
 			定时器 = null;
 			排队冲刷();
-		}, 1);
+		}, 刷新等待毫秒);
 	};
 
 	return {
@@ -3099,6 +3626,29 @@ function isSpeedTestSite(hostname) {
 	return speedTestDomains.some(domain => hostname === domain || hostname.endsWith('.' + domain));
 }
 
+function 是明文HTTP请求(data) {
+	if (!data || 有效数据长度(data) < 4) return false;
+	const bytes = 数据转Uint8Array(data);
+	const prefix = 魏烈思文本解码器.decode(bytes.subarray(0, Math.min(8, bytes.byteLength)));
+	return /^(GET|HEAD|POST|OPTIONS)\s/i.test(prefix);
+}
+
+function 是标准HTTP连通性探测(hostname, port, data) {
+	if (port !== 80 || !是明文HTTP请求(data)) return false;
+	const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+	const bytes = 数据转Uint8Array(data);
+	const requestText = 魏烈思文本解码器.decode(bytes);
+	const pathMatch = requestText.match(/^(?:GET|HEAD)\s+(\/[^\s]*)\s+HTTP\/1\.[01]/i);
+	if (!pathMatch) return false;
+	const path = pathMatch[1].split('?', 1)[0].toLowerCase();
+	const hosts = new Set([
+		'www.gstatic.com', 'connectivitycheck.gstatic.com', 'clients3.google.com',
+		'cp.cloudflare.com', 'speed.cloudflare.com', 'connectivitycheck.platform.hicloud.com'
+	]);
+	if (!hosts.has(host)) return false;
+	return path === '/generate_204' || path === '/generate204' || path === '/connectivitycheck' || path === '/generate_204/';
+}
+
 function 构造本地204响应(respHeader = null) {
 	const 本地204响应 = new TextEncoder().encode(
 		'HTTP/1.1 204 No Content\r\n' +
@@ -3327,10 +3877,10 @@ async function httpsConnect(targetHost, targetPort, initialData, TCP连接, pars
 }
 
 function 创建请求TCP连接器(request) {
-	const 请求对象 = /** @type {any} */ (request);
-	const fetcher = 请求对象?.fetcher;
-	if (!fetcher || typeof fetcher.connect !== 'function') throw new Error('request.fetcher.connect unavailable');
-	return (options, init) => init === undefined ? fetcher.connect(options) : fetcher.connect(options, init);
+	return (options, init = {}) => cloudflareConnect(options, {
+		allowHalfOpen: true,
+		...init,
+	});
 }
 ////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
 const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
@@ -4793,12 +5343,21 @@ function base64SecretDecode(encoded, secret) {
 function 获取传输协议配置(配置 = {}) {
 	const 是gRPC = 配置.传输协议 === 'grpc';
 	const { 头: 本机Padding头, 键: 本机Padding键 } = 获取叉HTTPPadding标识(配置.UUID);
+	const XHTTP配置 = 配置.XHTTP配置 || {};
+	const XMUX配置 = XHTTP配置.XMUX || {};
+	const Padding范围 = 解析叉HTTPPadding范围(XHTTP配置.Padding字节);
 	const 叉混淆JSON = {
 		"xPaddingObfsMode": true,
-		"xPaddingMethod": "tokenish",
-		"xPaddingPlacement": "queryInHeader",
+		"xPaddingBytes": `${Padding范围.最小}-${Padding范围.最大}`,
+		"xPaddingMethod": XHTTP配置.Padding方法 === 'repeat-x' ? 'repeat-x' : 'tokenish',
+		"xPaddingPlacement": ['queryInHeader', 'header', 'query'].includes(XHTTP配置.Padding位置) ? XHTTP配置.Padding位置 : 'queryInHeader',
 		"xPaddingHeader": 本机Padding头,
-		"xPaddingKey": 本机Padding键
+		"xPaddingKey": 本机Padding键,
+		"xmux": {
+			"maxConnections": 规范化叉HTTP整数范围(XMUX配置.最大连接数, "2-3", 1, 16),
+			"hMaxRequestTimes": 规范化叉HTTP整数范围(XMUX配置.单连接最大请求, "600-900", 1, 10000),
+			"hMaxReusableSecs": 规范化叉HTTP整数范围(XMUX配置.可复用秒数, "1800-3000", 60, 86400)
+		}
 	};
 	return {
 		type: 是gRPC ? (配置.gRPC模式 === 'multi' ? 'grpc&mode=multi' : 'grpc&mode=gun') : (配置.传输协议 === 'xhttp' ? `xhttp&mode=stream-one&extra=${encodeURIComponent(JSON.stringify(叉混淆JSON))}` : 'ws'),
@@ -4826,6 +5385,7 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 	const 需要处理ECH = Boolean(uuid && ECH启用);
 	const gRPCUserAgent = (typeof config_JSON?.gRPCUserAgent === 'string' && config_JSON.gRPCUserAgent.trim()) ? config_JSON.gRPCUserAgent.trim() : null;
 	const 需要处理gRPC = config_JSON?.传输协议 === "grpc" && Boolean(gRPCUserAgent);
+	const 需要关闭XHTTPSMUX = config_JSON?.传输协议 === "xhttp" && config_JSON?.XHTTP配置?.禁用SMUX !== false;
 	const gRPCUserAgentYAML = gRPCUserAgent ? JSON.stringify(gRPCUserAgent) : null;
 	let clash_yaml = Clash_原始订阅内容.replace(/mode:\s*Rule\b/g, 'mode: rule');
 
@@ -4863,10 +5423,50 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 		return `grpc-opts: {${patchedContent}}`;
 	});
 	const 匹配到gRPC网络 = (text) => /(?:^|[,{])\s*network:\s*(?:"grpc"|'grpc'|grpc)(?=\s*(?:[,}\n#]|$))/mi.test(text);
+	const 匹配到XHTTP网络 = (text) => /(?:^|[,{])\s*network:\s*(?:"xhttp"|'xhttp'|xhttp)(?=\s*(?:[,}\n#]|$))/mi.test(text);
+	const 关闭Flow格式XHTTPSMUX = (nodeText) => {
+		if (!匹配到XHTTP网络(nodeText)) return nodeText;
+		if (/smux\s*:\s*\{/i.test(nodeText)) {
+			return nodeText.replace(/smux\s*:\s*\{[^{}]*\}/i, 'smux: {enabled: false}');
+		}
+		return nodeText.replace(/\}(\s*)$/, ', smux: {enabled: false}}$1');
+	};
+	const 关闭Block格式XHTTPSMUX = (nodeLines, topLevelIndent) => {
+		const nodeText = nodeLines.join('\n');
+		if (!匹配到XHTTP网络(nodeText)) return nodeLines;
+		let smuxIndex = -1;
+		for (let idx = 0; idx < nodeLines.length; idx++) {
+			const line = nodeLines[idx];
+			if (!line.trim() || line.search(/\S/) !== topLevelIndent) continue;
+			if (/^\s*smux\s*:/.test(line)) {
+				smuxIndex = idx;
+				break;
+			}
+		}
+		const replacement = `${' '.repeat(topLevelIndent)}smux: {enabled: false}`;
+		if (smuxIndex !== -1) {
+			let blockEnd = smuxIndex + 1;
+			while (blockEnd < nodeLines.length) {
+				const next = nodeLines[blockEnd];
+				if (!next.trim()) {
+					blockEnd++;
+					continue;
+				}
+				if (next.search(/\S/) <= topLevelIndent) break;
+				blockEnd++;
+			}
+			nodeLines.splice(smuxIndex, blockEnd - smuxIndex, replacement);
+			return nodeLines;
+		}
+		let insertIndex = nodeLines.length - 1;
+		while (insertIndex >= 0 && !nodeLines[insertIndex].trim()) insertIndex--;
+		nodeLines.splice(insertIndex + 1, 0, replacement);
+		return nodeLines;
+	};
 	const 获取代理类型 = (nodeText) => nodeText.match(/type:\s*(\w+)/)?.[1] || 'vl' + 'ess';
 	const 获取凭据值 = (nodeText, isFlowStyle) => {
 		const credentialField = 获取代理类型(nodeText) === 'trojan' ? 'password' : 'uuid';
-		const pattern = new RegExp(`${credentialField}:\\s*${isFlowStyle ? '([^,}\\n]+)' : '([^\\n]+)'}`);
+		const pattern = new RegExp(`${credentialField}:\\s*${isFlowStyle ? '([^,}\n]+)' : '([^\n]+)'}`);
 		return nodeText.match(pattern)?.[1]?.trim() || null;
 	};
 	const 插入NameserverPolicy = (yaml, hostsEntries) => {
@@ -4971,7 +5571,7 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 		clash_yaml = 插入NameserverPolicy(clash_yaml, hostsEntries);
 	}
 
-	if (!需要处理ECH && !需要处理gRPC) return clash_yaml;
+	if (!需要处理ECH && !需要处理gRPC && !需要关闭XHTTPSMUX) return clash_yaml;
 
 	const lines = clash_yaml.split('\n');
 	const processedLines = [];
@@ -4990,6 +5590,7 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 				braceCount += (lines[i].match(/\{/g) || []).length - (lines[i].match(/\}/g) || []).length;
 			}
 			if (需要处理gRPC) fullNode = 添加Flow格式gRPCUserAgent(fullNode);
+			if (需要关闭XHTTPSMUX) fullNode = 关闭Flow格式XHTTPSMUX(fullNode);
 			if (需要处理ECH && 获取凭据值(fullNode, true) === uuid.trim()) {
 				fullNode = fullNode.replace(/\}(\s*)$/, `, ech-opts: {enable: true${ECH_SNI ? `, query-server-name: ${ECH_SNI}` : ''}}}$1`);
 			}
@@ -5023,6 +5624,7 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 				nodeLines = 添加Block格式gRPCUserAgent(nodeLines, topLevelIndent);
 				nodeText = nodeLines.join('\n');
 			}
+			if (需要关闭XHTTPSMUX) nodeLines = 关闭Block格式XHTTPSMUX(nodeLines, topLevelIndent);
 			if (需要处理ECH && 获取凭据值(nodeText, false) === uuid.trim()) nodeLines = 添加Block格式ECHOpts(nodeLines, topLevelIndent);
 			processedLines.push(...nodeLines);
 		} else {
@@ -5611,6 +6213,22 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 		启用0RTT: false,
 		TLS分片: null,
 		随机路径: false,
+		XHTTP配置: {
+			模式: "stream-one",
+			禁用SMUX: true,
+			Padding字节: "100-1000",
+			Padding方法: "tokenish",
+			Padding位置: "queryInHeader",
+			流式分块: {
+				上行合包字节: 20480,
+				刷新等待毫秒: 1,
+			},
+			XMUX: {
+				最大连接数: "2-3",
+				单连接最大请求: "600-900",
+				可复用秒数: "1800-3000",
+			},
+		},
 		ECH: false,
 		ECHConfig: {
 			DNS: Ali_DoH,
@@ -5723,6 +6341,28 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	config_JSON.UUID = userID;
 	if (!config_JSON.随机路径) config_JSON.随机路径 = false;
 	if (!config_JSON.启用0RTT) config_JSON.启用0RTT = false;
+	if (!config_JSON.XHTTP配置) config_JSON.XHTTP配置 = {
+		模式: "stream-one",
+		禁用SMUX: true,
+		Padding字节: "100-1000",
+		Padding方法: "tokenish",
+		Padding位置: "queryInHeader",
+		流式分块: { 上行合包字节: 20480, 刷新等待毫秒: 1 },
+		XMUX: { 最大连接数: "2-3", 单连接最大请求: "600-900", 可复用秒数: "1800-3000" },
+	};
+	if (!config_JSON.XHTTP配置.流式分块) config_JSON.XHTTP配置.流式分块 = { 上行合包字节: 20480, 刷新等待毫秒: 1 };
+	const XHTTPPadding范围 = 解析叉HTTPPadding范围(config_JSON.XHTTP配置.Padding字节);
+	config_JSON.XHTTP配置.模式 = 'stream-one';
+	if (typeof config_JSON.XHTTP配置.禁用SMUX !== 'boolean') config_JSON.XHTTP配置.禁用SMUX = true;
+	config_JSON.XHTTP配置.Padding字节 = `${XHTTPPadding范围.最小}-${XHTTPPadding范围.最大}`;
+	config_JSON.XHTTP配置.Padding方法 = config_JSON.XHTTP配置.Padding方法 === 'repeat-x' ? 'repeat-x' : 'tokenish';
+	config_JSON.XHTTP配置.Padding位置 = ['queryInHeader', 'header', 'query'].includes(config_JSON.XHTTP配置.Padding位置) ? config_JSON.XHTTP配置.Padding位置 : 'queryInHeader';
+	config_JSON.XHTTP配置.流式分块.上行合包字节 = Math.max(4096, Math.min(262144, Number(config_JSON.XHTTP配置.流式分块.上行合包字节) || 20480));
+	config_JSON.XHTTP配置.流式分块.刷新等待毫秒 = Math.max(1, Math.min(100, Number(config_JSON.XHTTP配置.流式分块.刷新等待毫秒) || 1));
+	if (!config_JSON.XHTTP配置.XMUX) config_JSON.XHTTP配置.XMUX = {};
+	config_JSON.XHTTP配置.XMUX.最大连接数 = 规范化叉HTTP整数范围(config_JSON.XHTTP配置.XMUX.最大连接数, '2-3', 1, 16);
+	config_JSON.XHTTP配置.XMUX.单连接最大请求 = 规范化叉HTTP整数范围(config_JSON.XHTTP配置.XMUX.单连接最大请求, '600-900', 1, 10000);
+	config_JSON.XHTTP配置.XMUX.可复用秒数 = 规范化叉HTTP整数范围(config_JSON.XHTTP配置.XMUX.可复用秒数, '1800-3000', 60, 86400);
 
 	if (env.PATH) config_JSON.PATH = env.PATH.startsWith('/') ? env.PATH : '/' + env.PATH;
 	else if (!config_JSON.PATH) config_JSON.PATH = '/';
@@ -5778,7 +6418,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	const [路径部分, ...查询数组] = normalizedPath.split('?');
 	const 查询部分 = 查询数组.length ? '?' + 查询数组.join('?') : '';
 	const 最终查询部分 = 反代查询参数 ? (查询部分 ? 查询部分 + '&' + 反代查询参数 : '?' + 反代查询参数) : 查询部分;
-	config_JSON.完整节点路径 = (路径部分 || '/') + (路径部分 && 路径反代参数 ? '/' : '') + 路径反代参数 + 最终查询部分 + (config_JSON.启用0RTT ? (最终查询部分 ? '&' : '?') + 'ed=2560' : '');
+	config_JSON.完整节点路径 = (路径部分 || '/') + (路径部分 && 路径反代参数 ? '/' : '') + 路径反代参数 + 最终查询部分 + (config_JSON.启用0RTT && config_JSON.传输协议 === 'ws' ? (最终查询部分 ? '&' : '?') + 'ed=2560' : '');
 
 	if (!config_JSON.TLS分片 && config_JSON.TLS分片 !== null) config_JSON.TLS分片 = null;
 	const TLS分片参数 = config_JSON.TLS分片 == 'Shadowrocket' ? `&fragment=${encodeURIComponent('1,40-60,30-50,tlshello')}` : config_JSON.TLS分片 == 'Happ' ? `&fragment=${encodeURIComponent('3,1,tlshello')}` : '';
