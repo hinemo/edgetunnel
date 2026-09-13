@@ -19,7 +19,7 @@
 
 ## 使用方式
 
-进入 `https://ed.dys.qzz.io/admin`，在 **Worker 执行区域** 选择东京、新加坡、首尔、弗吉尼亚或默认就近执行，点击 **应用并发布**。
+进入 `https://ed.dys.qzz.io/admin`，在 **Worker 执行区域** 选择东京、新加坡、首尔、香港、孟买、悉尼、法兰克福、伦敦、俄勒冈、弗吉尼亚或默认就近执行，点击 **应用并发布**。
 
 Worker 会调用仓库的 `workflow_dispatch`；workflow 仅接受预定义区域映射，渲染临时 `wrangler.toml` 并执行 `wrangler deploy`，不会把选择写回仓库。部署结果、Version ID 和失败日志以 GitHub Actions 为准。
 

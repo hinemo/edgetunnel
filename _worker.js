@@ -18,6 +18,12 @@ const WorkerPlacement选项 = Object.freeze({
 	tokyo: { region: 'aws:ap-northeast-1', label: '东京（AWS ap-northeast-1）' },
 	singapore: { region: 'aws:ap-southeast-1', label: '新加坡（AWS ap-southeast-1）' },
 	seoul: { region: 'aws:ap-northeast-2', label: '首尔（AWS ap-northeast-2）' },
+	hongkong: { region: 'aws:ap-east-1', label: '香港（AWS ap-east-1）' },
+	mumbai: { region: 'aws:ap-south-1', label: '孟买（AWS ap-south-1）' },
+	sydney: { region: 'aws:ap-southeast-2', label: '悉尼（AWS ap-southeast-2）' },
+	frankfurt: { region: 'aws:eu-central-1', label: '法兰克福（AWS eu-central-1）' },
+	london: { region: 'aws:eu-west-2', label: '伦敦（AWS eu-west-2）' },
+	oregon: { region: 'aws:us-west-2', label: '俄勒冈（AWS us-west-2）' },
 	virginia: { region: 'aws:us-east-1', label: '弗吉尼亚（AWS us-east-1）' },
 });
 const WorkerPlacement配置键 = 'worker-placement.json';

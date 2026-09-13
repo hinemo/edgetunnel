@@ -8,6 +8,9 @@ keep_vars = true
 [placement]
 region = "aws:ap-southeast-1"
 
+[vars]
+GITHUB_DEPLOY_REPOSITORY = "hinemo/edgetunnel"
+
 [[routes]]
 pattern = "ed.dys.qzz.io"
 custom_domain = true
