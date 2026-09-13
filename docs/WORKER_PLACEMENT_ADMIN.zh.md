@@ -13,9 +13,9 @@
 | `GITHUB_DEPLOY_REPOSITORY` | 普通变量 | `OWNER/edgetunnel-private` |
 | `GITHUB_DEPLOY_REF` | 可选普通变量 | `main` |
 | `GITHUB_DEPLOY_WORKFLOW` | 可选普通变量 | `deploy-placement.yml` |
-| `GITHUB_DEPLOY_TOKEN` | Secret | GitHub fine-grained token，仓库 Actions: Read and write |
+| `DEPLOY_GITHUB_TOKEN` | Secret | GitHub fine-grained token，仓库 Actions: Read and write |
 
-`GITHUB_DEPLOY_TOKEN` 仅保存在 Worker Secret，页面、KV 和日志均不返回它。
+`DEPLOY_GITHUB_TOKEN` 仅保存在 Worker Secret，页面、KV 和日志均不返回它。
 
 ## 使用方式
 

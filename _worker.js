@@ -35,7 +35,7 @@ function 获取WorkerPlacement选项(值) {
 
 function 获取WorkerPlacement调度配置(env) {
 	const repository = String(env.GITHUB_DEPLOY_REPOSITORY || '').trim();
-	const token = String(env.GITHUB_DEPLOY_TOKEN || '').trim();
+	const token = String(env.DEPLOY_GITHUB_TOKEN || '').trim();
 	const ref = String(env.GITHUB_DEPLOY_REF || 'main').trim();
 	const workflow = String(env.GITHUB_DEPLOY_WORKFLOW || 'deploy-placement.yml').trim();
 	return {
@@ -65,7 +65,7 @@ async function 读取WorkerPlacement设置(env) {
 
 async function 请求WorkerPlacement部署(env, desired) {
 	const dispatch = 获取WorkerPlacement调度配置(env);
-	if (!dispatch.configured) throw new Error('未配置 GITHUB_DEPLOY_REPOSITORY 或 GITHUB_DEPLOY_TOKEN Secret');
+	if (!dispatch.configured) throw new Error('未配置 GITHUB_DEPLOY_REPOSITORY 或 DEPLOY_GITHUB_TOKEN Secret');
 	const response = await fetch(`https://api.github.com/repos/${dispatch.repository}/actions/workflows/${encodeURIComponent(dispatch.workflow)}/dispatches`, {
 		method: 'POST',
 		headers: { 'Authorization': `Bearer ${dispatch.token}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'edgetunnel-placement-controller' },
@@ -266,7 +266,7 @@ const 管理页面增强内容 = String.raw`
       select.innerHTML=(settings.options||[]).map(function(option){return '<option value="'+option.key+'">'+option.label+'</option>';}).join('');
       select.value=settings.desired||'singapore';
       if(settings.dispatchConfigured){ placementStatus('当前期望：'+select.options[select.selectedIndex]?.text+'。已配置 GitHub Actions：'+settings.repository+'/'+settings.workflow,'ok'); button.disabled=false; }
-      else{ placementStatus('尚未配置部署调度：需要 Worker Secret GITHUB_DEPLOY_TOKEN 和变量 GITHUB_DEPLOY_REPOSITORY。','error'); button.disabled=true; }
+      else{ placementStatus('尚未配置部署调度：需要 Worker Secret DEPLOY_GITHUB_TOKEN 和变量 GITHUB_DEPLOY_REPOSITORY。','error'); button.disabled=true; }
     }catch(error){ placementStatus(error.message||'无法读取 Placement 设置','error'); button.disabled=true; }
   }
   function init(){

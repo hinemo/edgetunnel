@@ -87,7 +87,7 @@ jobs:
       - name: Restore Worker deployment dispatcher secret
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          GITHUB_DEPLOY_TOKEN: ${{ secrets.GITHUB_DEPLOY_TOKEN }}
+          DEPLOY_GITHUB_TOKEN: ${{ secrets.DEPLOY_GITHUB_TOKEN }}
         run: |
-          test -n "$GITHUB_DEPLOY_TOKEN"
-          printf '%s' "$GITHUB_DEPLOY_TOKEN" | npx wrangler@4 secret put GITHUB_DEPLOY_TOKEN --config wrangler.toml
+          test -n "$DEPLOY_GITHUB_TOKEN"
+          printf '%s' "$DEPLOY_GITHUB_TOKEN" | npx wrangler@4 secret put DEPLOY_GITHUB_TOKEN --config wrangler.toml
